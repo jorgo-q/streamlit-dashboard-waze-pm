@@ -18,45 +18,73 @@ from sklearn.metrics import (
 
 from xgboost import XGBClassifier
 
+
 # ---------- PAGE CONFIG ----------
 st.set_page_config(
     page_title="Waze Churn Analysis Dashboard",
     layout="wide"
 )
 
+
 # ---------- DATA LOADING ----------
-DATA_PATH = "files/waze_dataset.csv"   # <-- change this to your actual file path
+DATA_PATH = "files/waze_dataset.csv"  # <-- make sure this matches your file name / location
+
 
 @st.cache_data
-def load_data(path: str):
+def load_data(path: str) -> pd.DataFrame:
     df = pd.read_csv(path)
+
+    # We know these columns exist from your description:
+    # label, ..., churned_1, device_new
+    # Target = churned_1 (0/1), we don't need 'label' for modeling
+    # Just ensure they exist and leave the rest as features.
+
+    # Drop 'label' if present (categorical retained/churned)
+    if "label" in df.columns:
+        df.drop(columns=["label"], inplace=True)
+
     return df
+
 
 df = load_data(DATA_PATH)
 
-# Assume target column is named 'churn' (0 = retained, 1 = churned)
-# Drop obvious non-feature columns if present (e.g., 'user_id')
-label_col = "churn"
+
+# ---------- FEATURES / TARGET ----------
+# Target column you told me:
+label_col = "churned_1"
+
+if label_col not in df.columns:
+    st.error(f"Target column '{label_col}' not found in data. Check your CSV and code.")
+    st.stop()
+
+# Columns to drop from features
 drop_cols = [label_col]
+
+# If there are any ID-like columns, add them here (adjust as needed)
 for col in ["user_id", "ID", "id"]:
     if col in df.columns:
         drop_cols.append(col)
 
+# X = features, y = target
 X = df.drop(columns=drop_cols)
 y = df[label_col]
 
-# Train/test split for model tab
+
+# ---------- MODEL TRAINING ----------
 @st.cache_data
-def train_model(X, y):
+def train_model(X: pd.DataFrame, y: pd.Series):
     X_train, X_test, y_train, y_test = train_test_split(
-        X, y, test_size=0.25, stratify=y, random_state=42
+        X, y,
+        test_size=0.25,
+        stratify=y,
+        random_state=42
     )
 
-    # Simple tuned XGBoost (based on your notebook tuning)
+    # Tuned XGBoost based on your notebook settings/intuition
     xgb_clf = XGBClassifier(
-        objective='binary:logistic',
+        objective="binary:logistic",
         random_state=42,
-        eval_metric='logloss',
+        eval_metric="logloss",
         n_jobs=-1,
         max_depth=8,
         min_child_weight=1,
@@ -78,7 +106,9 @@ def train_model(X, y):
 
     return xgb_clf, X_train, X_test, y_train, y_test, y_test_pred, y_test_proba, metrics
 
+
 xgb_clf, X_train, X_test, y_train, y_test, y_test_pred, y_test_proba, model_metrics = train_model(X, y)
+
 
 # ---------- HEADER ----------
 with st.container():
@@ -99,6 +129,7 @@ with st.container():
 
 st.markdown("---")
 
+
 # ---------- TOP-LEVEL KPIs ----------
 churn_rate = df[label_col].mean()
 total_users = len(df)
@@ -109,16 +140,18 @@ kpi_col1, kpi_col2, kpi_col3 = st.columns(3)
 with kpi_col1:
     st.metric("Total Users", f"{total_users:,}")
 with kpi_col2:
-    st.metric("Churn Rate", f"{churn_rate*100:.1f}%")
+    st.metric("Churn Rate", f"{churn_rate * 100:.1f}%")
 with kpi_col3:
     st.metric("Churned Users", f"{churned_users:,}")
 
 st.markdown("---")
 
+
 # ---------- TABS ----------
 tab_overview, tab_behavior, tab_model = st.tabs(
     ["Overview", "Behavior Explorer", "Model Insights"]
 )
+
 
 # ===== TAB 1: OVERVIEW =====
 with tab_overview:
@@ -147,10 +180,11 @@ with tab_overview:
         st.markdown(
             """
             - About **{:.1f}%** of users in this sample are labeled as churned.  
-            - Churn is not evenly distributed: it is tied to **usage behavior**, not device type.  
-            - This dashboard helps answer: *“Which behaviors signal churn risk, and how can we intervene?”*
+            - Churn is driven by **behavioral patterns**, not just static attributes.  
+            - This dashboard focuses on: *“Which behaviors signal churn risk, and how can we intervene?”*
             """.format(churn_rate * 100)
         )
+
 
 # ===== TAB 2: BEHAVIOR EXPLORER =====
 with tab_behavior:
@@ -159,7 +193,7 @@ with tab_behavior:
     st.markdown(
         """
         Compare the distribution of key behavioral features between **retained** and **churned** users.  
-        This is where PMs can see how habits differ across segments.
+        This helps PMs see how habits differ across segments.
         """
     )
 
@@ -215,6 +249,7 @@ with tab_behavior:
         else:
             st.info("No numeric features available to plot.")
 
+
 # ===== TAB 3: MODEL INSIGHTS =====
 with tab_model:
     st.header("🧠 Model Insights – Tuned XGBoost")
@@ -229,13 +264,13 @@ with tab_model:
     # --- Metrics row ---
     m_col1, m_col2, m_col3, m_col4 = st.columns(4)
     with m_col1:
-        st.metric("Accuracy (Test)", f"{model_metrics['accuracy']*100:.1f}%")
+        st.metric("Accuracy (Test)", f"{model_metrics['accuracy'] * 100:.1f}%")
     with m_col2:
-        st.metric("Precision (Test)", f"{model_metrics['precision']*100:.1f}%")
+        st.metric("Precision (Test)", f"{model_metrics['precision'] * 100:.1f}%")
     with m_col3:
-        st.metric("Recall (Test)", f"{model_metrics['recall']*100:.1f}%")
+        st.metric("Recall (Test)", f"{model_metrics['recall'] * 100:.1f}%")
     with m_col4:
-        st.metric("F1-score (Test)", f"{model_metrics['f1']*100:.1f}%")
+        st.metric("F1-score (Test)", f"{model_metrics['f1'] * 100:.1f}%")
 
     st.markdown("---")
 
