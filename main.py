@@ -25,31 +25,60 @@ st.set_page_config(
     layout="wide"
 )
 
+
 # ---------- DATA LOADING ----------
-DATA_PATH = "files/waze_dataset.csv"  # <-- your exact path
+DATA_PATH = "files/waze_dataset.csv"  # <-- your exact path to the raw Kaggle CSV
 
 
 @st.cache_data
 def load_data(path: str) -> pd.DataFrame:
     df = pd.read_csv(path)
 
-    # Based on your schema:
-    # columns include: label, sessions, drives, ..., churned_1, device_new
-    # We'll drop 'label' (string) and use 'churned_1' as the numeric target.
+    # At this point, columns look like your "before" list:
+    # sessions, drives, total_sessions, ..., high_recent_usage
+    # plus 'label' and 'device'
+
+    # 1) Keep only rows with known label (optional but matches your notebook shape)
     if "label" in df.columns:
-        # keep it for potential display if you want later; for now we don't need it in X
-        pass
+        df = df[df["label"].isin(["retained", "churned"])].copy()
+
+    # 2) Create numeric churn column from label
+    #    churned_1 = 1 if label == 'churned', else 0
+    if "label" in df.columns and "churned_1" not in df.columns:
+        df["churned_1"] = (df["label"] == "churned").astype(int)
+
+    # 3) Create device_new if not already present
+    #    Example encoding: 1 if device == 'Android', 0 otherwise
+    if "device" in df.columns and "device_new" not in df.columns:
+        df["device_new"] = (df["device"] == "Android").astype(int)
+
+    # 4) (Optional) Recreate extra engineered columns if they don't exist
+    #    percent_sessions, total_sessions_per_day, kms_driving_day
+    if "percent_sessions" not in df.columns:
+        # sessions / total_sessions, with safe division
+        df["percent_sessions"] = df["sessions"] / df["total_sessions"].replace(0, np.nan)
+        df["percent_sessions"] = df["percent_sessions"].fillna(0)
+
+    if "total_sessions_per_day" not in df.columns:
+        df["total_sessions_per_day"] = df["total_sessions"] / df["n_days_after_onboarding"].replace(0, np.nan)
+        df["total_sessions_per_day"] = df["total_sessions_per_day"].fillna(0)
+
+    if "kms_driving_day" not in df.columns:
+        df["kms_driving_day"] = df["driven_km_drives"] / df["driving_days"].replace(0, np.nan)
+        df["kms_driving_day"] = df["kms_driving_day"].fillna(0)
 
     return df
 
 
 df = load_data(DATA_PATH)
 
+
 # ---------- FEATURES / TARGET ----------
 label_col = "churned_1"
 
 if label_col not in df.columns:
     st.error(f"Target column '{label_col}' not found in data. Check your CSV and path.")
+    st.write("Available columns:", list(df.columns))
     st.stop()
 
 # Columns to exclude from features
@@ -70,6 +99,7 @@ y = df[label_col]
 
 
 # ---------- MODEL TRAINING ----------
+@st.cache_data
 def train_model(X: pd.DataFrame, y: pd.Series):
     X_train, X_test, y_train, y_test = train_test_split(
         X, y,
