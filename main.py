@@ -25,53 +25,51 @@ st.set_page_config(
     layout="wide"
 )
 
-
 # ---------- DATA LOADING ----------
-DATA_PATH = "files/waze_dataset.csv"  # <-- make sure this matches your file name / location
+DATA_PATH = "files/waze_dataset.csv"  # <-- your exact path
 
 
 @st.cache_data
 def load_data(path: str) -> pd.DataFrame:
     df = pd.read_csv(path)
 
-    # We know these columns exist from your description:
-    # label, ..., churned_1, device_new
-    # Target = churned_1 (0/1), we don't need 'label' for modeling
-    # Just ensure they exist and leave the rest as features.
-
-    # Drop 'label' if present (categorical retained/churned)
+    # Based on your schema:
+    # columns include: label, sessions, drives, ..., churned_1, device_new
+    # We'll drop 'label' (string) and use 'churned_1' as the numeric target.
     if "label" in df.columns:
-        df.drop(columns=["label"], inplace=True)
+        # keep it for potential display if you want later; for now we don't need it in X
+        pass
 
     return df
 
 
 df = load_data(DATA_PATH)
 
-
 # ---------- FEATURES / TARGET ----------
-# Target column you told me:
 label_col = "churned_1"
 
 if label_col not in df.columns:
-    st.error(f"Target column '{label_col}' not found in data. Check your CSV and code.")
+    st.error(f"Target column '{label_col}' not found in data. Check your CSV and path.")
     st.stop()
 
-# Columns to drop from features
+# Columns to exclude from features
 drop_cols = [label_col]
 
-# If there are any ID-like columns, add them here (adjust as needed)
-for col in ["user_id", "ID", "id"]:
+# Drop 'label' (string) and original 'device' (we'll use device_new instead)
+for col in ["label", "device"]:
     if col in df.columns:
         drop_cols.append(col)
 
-# X = features, y = target
+# If any ID-like columns existed, you could add them here too
+for col in ["user_id", "ID", "id"]:
+    if col in df.columns and col not in drop_cols:
+        drop_cols.append(col)
+
 X = df.drop(columns=drop_cols)
 y = df[label_col]
 
 
 # ---------- MODEL TRAINING ----------
-@st.cache_data
 def train_model(X: pd.DataFrame, y: pd.Series):
     X_train, X_test, y_train, y_test = train_test_split(
         X, y,
@@ -80,7 +78,7 @@ def train_model(X: pd.DataFrame, y: pd.Series):
         random_state=42
     )
 
-    # Tuned XGBoost based on your notebook settings/intuition
+    # Tuned XGBoost (simple, based on your notebook intuition)
     xgb_clf = XGBClassifier(
         objective="binary:logistic",
         random_state=42,
@@ -180,7 +178,7 @@ with tab_overview:
         st.markdown(
             """
             - About **{:.1f}%** of users in this sample are labeled as churned.  
-            - Churn is driven by **behavioral patterns**, not just static attributes.  
+            - The goal is not just to predict churn, but to understand **which behaviors drive it**.  
             - This dashboard focuses on: *“Which behaviors signal churn risk, and how can we intervene?”*
             """.format(churn_rate * 100)
         )
@@ -334,7 +332,7 @@ with tab_model:
             """
             This curve helps PMs decide **how aggressive** the model should be:
             - Moving right = higher recall (catch more churners)  
-            - But precision drops (more false alarms)
+            - But precision drops (more false alarms).
             """
         )
 
