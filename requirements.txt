@@ -12,3 +12,6 @@ plotly
 
 # Required for pandas to read Excel (.xlsx) files
 openpyxl
+
+scikit-learn
+xgboost
