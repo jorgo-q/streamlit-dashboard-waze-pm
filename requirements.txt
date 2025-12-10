@@ -1,0 +1,14 @@
+# Streamlit web app framework
+streamlit
+
+# Data manipulation and analysis
+pandas
+
+# Numerical computations
+numpy
+
+# Data Visualization
+plotly
+
+# Required for pandas to read Excel (.xlsx) files
+openpyxl
