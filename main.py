@@ -25,7 +25,7 @@ st.set_page_config(
 )
 
 # ---------- DATA LOADING ----------
-DATA_PATH = "waze_churn_clean.csv"   # <-- change this to your actual file path
+DATA_PATH = "files/waze_dataset.csv"   # <-- change this to your actual file path
 
 @st.cache_data
 def load_data(path: str):
