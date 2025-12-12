@@ -25,53 +25,55 @@ st.set_page_config(
     layout="wide"
 )
 
+# ---------- CONSISTENT COLOR MAP (IMPORTANT) ----------
+# Hard lock the colors so churned/retained never swap in plots.
+STATUS_ORDER = ["Retained", "Churned"]
+STATUS_COLOR_MAP = {
+    "Retained": "#1f77b4",  # blue
+    "Churned": "#ff7f0e",   # orange
+}
+
 
 # ---------- DATA LOADING ----------
-DATA_PATH = "files/waze_dataset.csv"  # <-- your exact path to the raw Kaggle CSV
-
+DATA_PATH = "files/waze_dataset.csv"  # <-- your path
 
 @st.cache_data
 def load_data(path: str) -> pd.DataFrame:
     df = pd.read_csv(path)
 
-    # At this point, columns look like your "before" list:
-    # sessions, drives, total_sessions, ..., high_recent_usage
-    # plus 'label' and 'device'
-
-    # 1) Keep only rows with known label (optional but matches your notebook shape)
+    # Keep only known labels
     if "label" in df.columns:
         df = df[df["label"].isin(["retained", "churned"])].copy()
 
-    # 2) Create numeric churn column from label
-    #    churned_1 = 1 if label == 'churned', else 0
+    # Target: churned_1
     if "label" in df.columns and "churned_1" not in df.columns:
         df["churned_1"] = (df["label"] == "churned").astype(int)
 
-    # 3) Create device_new if not already present
-    #    Example encoding: 1 if device == 'Android', 0 otherwise
+    # Device encoding
     if "device" in df.columns and "device_new" not in df.columns:
         df["device_new"] = (df["device"] == "Android").astype(int)
 
-    # 4) (Optional) Recreate extra engineered columns if they don't exist
-    #    percent_sessions, total_sessions_per_day, kms_driving_day
-    if "percent_sessions" not in df.columns:
-        # sessions / total_sessions, with safe division
+    # Engineered features (safe division)
+    if "percent_sessions" not in df.columns and {"sessions", "total_sessions"}.issubset(df.columns):
         df["percent_sessions"] = df["sessions"] / df["total_sessions"].replace(0, np.nan)
         df["percent_sessions"] = df["percent_sessions"].fillna(0)
 
-    if "total_sessions_per_day" not in df.columns:
+    if "total_sessions_per_day" not in df.columns and {"total_sessions", "n_days_after_onboarding"}.issubset(df.columns):
         df["total_sessions_per_day"] = df["total_sessions"] / df["n_days_after_onboarding"].replace(0, np.nan)
         df["total_sessions_per_day"] = df["total_sessions_per_day"].fillna(0)
 
-    if "kms_driving_day" not in df.columns:
+    if "kms_driving_day" not in df.columns and {"driven_km_drives", "driving_days"}.issubset(df.columns):
         df["kms_driving_day"] = df["driven_km_drives"] / df["driving_days"].replace(0, np.nan)
         df["kms_driving_day"] = df["kms_driving_day"].fillna(0)
+
+    # Drop obvious NaNs (optional safety)
+    df = df.replace([np.inf, -np.inf], np.nan)
+    df = df.dropna(axis=0)
 
     return df
 
 
 df = load_data(DATA_PATH)
-
 
 # ---------- FEATURES / TARGET ----------
 label_col = "churned_1"
@@ -81,15 +83,10 @@ if label_col not in df.columns:
     st.write("Available columns:", list(df.columns))
     st.stop()
 
-# Columns to exclude from features
 drop_cols = [label_col]
-
-# Drop 'label' (string) and original 'device' (we'll use device_new instead)
 for col in ["label", "device"]:
     if col in df.columns:
         drop_cols.append(col)
-
-# If any ID-like columns existed, you could add them here too
 for col in ["user_id", "ID", "id"]:
     if col in df.columns and col not in drop_cols:
         drop_cols.append(col)
@@ -98,8 +95,8 @@ X = df.drop(columns=drop_cols)
 y = df[label_col]
 
 
-# ---------- MODEL TRAINING ----------
-@st.cache_data
+# ---------- MODEL TRAINING (WEIGHTED XGBOOST) ----------
+@st.cache_resource
 def train_model(X: pd.DataFrame, y: pd.Series):
     X_train, X_test, y_train, y_test = train_test_split(
         X, y,
@@ -108,16 +105,21 @@ def train_model(X: pd.DataFrame, y: pd.Series):
         random_state=42
     )
 
-    # Tuned XGBoost (simple, based on your notebook intuition)
+    # scale_pos_weight = (# negatives) / (# positives) on TRAIN ONLY
+    neg = (y_train == 0).sum()
+    pos = (y_train == 1).sum()
+    spw = (neg / pos) if pos > 0 else 1.0
+
+    # Weighted XGBoost (simple + aligned with your notebook)
     xgb_clf = XGBClassifier(
         objective="binary:logistic",
         random_state=42,
         eval_metric="logloss",
         n_jobs=-1,
-        max_depth=8,
-        min_child_weight=1,
+        n_estimators=200,
         learning_rate=0.1,
-        n_estimators=400,
+        max_depth=4,
+        scale_pos_weight=spw
     )
 
     xgb_clf.fit(X_train, y_train)
@@ -130,6 +132,7 @@ def train_model(X: pd.DataFrame, y: pd.Series):
         "precision": precision_score(y_test, y_test_pred, zero_division=0),
         "recall": recall_score(y_test, y_test_pred, zero_division=0),
         "f1": f1_score(y_test, y_test_pred, zero_division=0),
+        "scale_pos_weight": spw
     }
 
     return xgb_clf, X_train, X_test, y_train, y_test, y_test_pred, y_test_proba, metrics
@@ -140,8 +143,7 @@ xgb_clf, X_train, X_test, y_train, y_test, y_test_pred, y_test_proba, model_metr
 
 # ---------- HEADER ----------
 with st.container():
-    col_left, col_center, col_right = st.columns([1, 3, 1])
-
+    col_center = st.columns([1])[0]
     with col_center:
         st.markdown(
             """
@@ -161,16 +163,18 @@ st.markdown("---")
 # ---------- TOP-LEVEL KPIs ----------
 churn_rate = df[label_col].mean()
 total_users = len(df)
-churned_users = df[label_col].sum()
+churned_users = int(df[label_col].sum())
 retained_users = total_users - churned_users
 
-kpi_col1, kpi_col2, kpi_col3 = st.columns(3)
+kpi_col1, kpi_col2, kpi_col3, kpi_col4 = st.columns(4)
 with kpi_col1:
     st.metric("Total Users", f"{total_users:,}")
 with kpi_col2:
     st.metric("Churn Rate", f"{churn_rate * 100:.1f}%")
 with kpi_col3:
     st.metric("Churned Users", f"{churned_users:,}")
+with kpi_col4:
+    st.metric("scale_pos_weight", f"{model_metrics['scale_pos_weight']:.2f}")
 
 st.markdown("---")
 
@@ -191,7 +195,7 @@ with tab_overview:
         st.subheader("Churn vs Retained")
 
         churn_counts = df[label_col].value_counts().rename(index={0: "Retained", 1: "Churned"})
-        churn_df = churn_counts.reset_index()
+        churn_df = churn_counts.reindex(STATUS_ORDER).reset_index()
         churn_df.columns = ["Status", "Count"]
 
         fig_pie = px.pie(
@@ -200,17 +204,19 @@ with tab_overview:
             values="Count",
             hole=0.4,
             title="User Status Breakdown",
+            color="Status",
+            color_discrete_map=STATUS_COLOR_MAP
         )
         st.plotly_chart(fig_pie, use_container_width=True)
 
     with col2:
         st.subheader("Key Takeaways (for PMs)")
         st.markdown(
-            """
-            - About **{:.1f}%** of users in this sample are labeled as churned.  
-            - The goal is not just to predict churn, but to understand **which behaviors drive it**.  
+            f"""
+            - About **{churn_rate * 100:.1f}%** of users in this sample are labeled as churned.  
+            - The goal is **not** to claim a perfect churn predictor. The real value is explaining **which behaviors drive churn risk**.  
             - This dashboard focuses on: *“Which behaviors signal churn risk, and how can we intervene?”*
-            """.format(churn_rate * 100)
+            """
         )
 
 
@@ -247,11 +253,14 @@ with tab_behavior:
         if feature:
             df_plot = df[[feature, label_col]].copy()
             df_plot["Status"] = df_plot[label_col].map({0: "Retained", 1: "Churned"})
+            df_plot["Status"] = pd.Categorical(df_plot["Status"], categories=STATUS_ORDER, ordered=True)
 
             fig_hist = px.histogram(
                 df_plot,
                 x=feature,
                 color="Status",
+                category_orders={"Status": STATUS_ORDER},
+                color_discrete_map=STATUS_COLOR_MAP,
                 nbins=bins,
                 barmode="overlay",
                 marginal="box",
@@ -263,6 +272,7 @@ with tab_behavior:
                 title=f"Distribution of {feature} by Churn Status",
                 xaxis_title=feature,
                 yaxis_title="Count",
+                legend_title_text="Status"
             )
 
             st.plotly_chart(fig_hist, use_container_width=True)
@@ -270,7 +280,7 @@ with tab_behavior:
             st.markdown(
                 """
                 **How to read this:**  
-                - Look for where the **churned** distribution differs from **retained**.  
+                - Look for where the **churned** distribution shifts away from **retained**.  
                 - Features where churned users cluster in different ranges are strong candidates for PM focus.
                 """
             )
@@ -280,12 +290,14 @@ with tab_behavior:
 
 # ===== TAB 3: MODEL INSIGHTS =====
 with tab_model:
-    st.header("🧠 Model Insights – Tuned XGBoost")
+    st.header("🧠 Model Insights – XGBoost (scale_pos_weight)")
 
     st.markdown(
         """
-        The model here is a **tuned XGBoost classifier**, trained on user behavior features.  
-        It’s used to (1) understand which features matter most, and (2) provide a practical way to flag at-risk users.
+        The model here is a **weighted XGBoost classifier** trained on user behavior features.  
+        It is not a perfect churn predictor, but it is useful for:
+        - spotting behavioral patterns linked to churn risk  
+        - flagging at-risk users early (with an understandable trade-off in false positives)
         """
     )
 
@@ -309,7 +321,7 @@ with tab_model:
         st.subheader("Confusion Matrix")
 
         cm = confusion_matrix(y_test, y_test_pred)
-        cm_labels = ["Retained", "Churned"]
+        cm_labels = ["Retained", "Churned"]  # 0 then 1
 
         fig_cm = go.Figure(
             data=go.Heatmap(
@@ -329,9 +341,9 @@ with tab_model:
 
         st.markdown(
             """
-            - **TP (bottom-right):** churners correctly flagged.  
-            - **FP (top-right):** non-churners we would unnecessarily target.  
-            - **FN (bottom-left):** churners we miss – most costly for retention.
+            - **TP (Churned → Churned):** churners correctly flagged  
+            - **FP (Retained → Churned):** false alarms (we target users who wouldn’t churn)  
+            - **FN (Churned → Retained):** missed churners (lost opportunity to intervene)  
             """
         )
 
@@ -347,7 +359,7 @@ with tab_model:
                 x=recall,
                 y=precision,
                 mode="lines",
-                name="Precision–Recall curve",
+                name="PR curve",
             )
         )
         fig_pr.update_layout(
@@ -360,9 +372,9 @@ with tab_model:
 
         st.markdown(
             """
-            This curve helps PMs decide **how aggressive** the model should be:
+            This curve helps PMs decide how aggressive the model should be:
             - Moving right = higher recall (catch more churners)  
-            - But precision drops (more false alarms).
+            - Precision drops (more false alarms)  
             """
         )
 
@@ -371,19 +383,16 @@ with tab_model:
     # --- Feature Importance ---
     st.subheader("Feature Importance – What Drives Churn?")
 
-    feature_importances = xgb_clf.feature_importances_
-    feature_names = X_train.columns
-
     fi_df = pd.DataFrame({
-        "feature": feature_names,
-        "importance": feature_importances
+        "feature": X_train.columns,
+        "importance": xgb_clf.feature_importances_
     }).sort_values(by="importance", ascending=False)
 
     top_n = st.slider(
         "Number of top features to show:",
         min_value=5,
         max_value=min(20, len(fi_df)),
-        value=10,
+        value=11,
     )
 
     fi_top = fi_df.head(top_n).sort_values(by="importance", ascending=True)
@@ -397,10 +406,10 @@ with tab_model:
         )
     )
     fig_fi.update_layout(
-        title=f"Top {top_n} Features Driving Churn (XGBoost)",
+        title=f"Top {top_n} Features Driving Churn (XGBoost - weighted)",
         xaxis_title="Importance",
         yaxis_title="Feature",
-        height=400,
+        height=450,
     )
 
     st.plotly_chart(fig_fi, use_container_width=True)
@@ -408,9 +417,8 @@ with tab_model:
     st.markdown(
         """
         **PM Interpretation:**  
-        - Features at the top of this list are the **strongest behavioral signals** of churn.  
-        - These are the levers Waze PMs should:
-          - Monitor as early warning signals  
-          - Target with habit-building nudges and experiments  
+        - Top features are the strongest behavioral signals linked to churn risk.  
+        - These are the levers Waze PMs should monitor and test interventions around  
+          (habit-building, early onboarding success, and repeated navigation behaviors).  
         """
     )
